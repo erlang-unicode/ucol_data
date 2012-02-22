@@ -1,0 +1,8 @@
+%% -*- erlang -*-
+{application, ucol_data,
+ [{description, "ucol_data"},
+  {vsn, "3.0.1"},
+  {modules, []},
+  {registered, []},
+  {env, []},
+  {applications, [kernel, stdlib, ux]}]}.
