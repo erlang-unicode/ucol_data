@@ -6,12 +6,13 @@
 }).
 
 generate() ->
+    DecodedList = [unicode:characters_to_binary(X) 
+        || X <- ux_uca_testdata:read_shifted()],
+    Filter = fun(Y) -> is_binary(Y) end,
+    {FilteredList, Errors} = lists:partition(Filter, DecodedList),
+    [io:format("Test Case Decode Error: ~w~n", [E]) || E <- Errors],
     #acc{
-        shifted=
-            [Y 
-                || Y <- [unicode:characters_to_binary(X) 
-                            || X <- ux_uca_testdata:read_shifted()], 
-                is_binary(Y)]
+        shifted=FilteredList
     }.
     
 
