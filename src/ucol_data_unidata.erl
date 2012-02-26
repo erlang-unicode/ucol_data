@@ -17,9 +17,11 @@
 
 
 generate() ->
+    ?INFO("Start generation."),
     DucetTable = (ux_unidata_filelist:get_source(allkeys, ducet))(get_table),
     Acc1 = #acc{},
     Acc2 = ets:foldl(fun ducet_handler/2, Acc1, DucetTable),
+    ?INFO("Ducet arrays were formed."),
 
     BlocksTable = (ux_unidata_filelist:get_source(blocks, block))(get_table),
     Acc3 = finish_blocks(ets:foldl(fun blocks_handler/2, Acc2, BlocksTable)),
@@ -30,7 +32,13 @@ generate() ->
     DecompList = ets:tab2list(DecompTable),
     ?INFO("DecompTable was transformed into a list."),
 
-    NewDecompList = lists:map(fun full_decompose_row/1, DecompList),
+    %% The table also contains NFKD decompositions (don't need them).
+    %% OldDecomp can contain points which can also be decomposed.
+    %% Full decomposition, filter standard (compat) compositions.
+    NewDecompList = [
+        {Point, ux_string:to_nfd([Point])}
+            || {Point, _OldDecomp} <- DecompList, 
+                not ux_unidata:is_compat(Point)],
     ?INFO("NFD elements were formed."),
 
     CccTable = (ux_unidata_filelist:get_source(unidata, ccc))(get_table),
@@ -140,10 +148,6 @@ decomp_ccc_handler({Char, _ReplaceStr}, CccList) ->
     [{Char, SpecialCcc} | proplists:delete(Char, CccList)];
 
 decomp_ccc_handler(_, CccList) -> CccList.
-
-
-full_decompose_row({Char, _ReplaceStr}) ->
-    {Char, ux_string:to_nfd([Char])}.
 
 
 %collect_decomp_handler({_Char, [_ReplaceChar]}, Acc) -> Acc;
