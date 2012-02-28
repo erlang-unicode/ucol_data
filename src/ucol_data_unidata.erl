@@ -10,7 +10,8 @@
     var_ducet=ucol_array:new(),
     primary_ducet=ucol_array:new(),
     ccc,
-    decomp=array:new()
+    decomp=array:new(),
+    diff_points=ucol_mask:new()
 }).
 
 -define(INFO(Str), error_logger:info_msg("[" ++ ?MODULE_STRING ++ "] " ++ Str)).
@@ -54,32 +55,41 @@ generate() ->
 
     Acc5 = lists:foldl(fun collect_decomp_handler/2, Acc4, NewDecompList),
     ?INFO("Decomposition table was fully decomposed."),
-    fix(Acc5).
+
+    Acc6 = lists:foldl(fun add_decomp_handler/2, Acc5, NewDecompList),
+    ?INFO("Composed diff_points were added."),
+
+    fix(Acc6).
 
 
 fix(Acc=#acc{
     ducet=D,
     var_ducet=VD,
     primary_ducet=PD,
-    decomp=DC
+    decomp=DC,
+    diff_points=DP
 }) -> 
     NewD = ucol_array:fix(D),
-    ?INFO("Ducet array was fixed."),
+    ?INFO("A ducet array was fixed."),
 
     NewVD = ucol_array:fix(VD),
-    ?INFO("Variable ducet array was fixed."),
+    ?INFO("A variable ducet array was fixed."),
 
     NewPD = ucol_array:fix(PD),
-    ?INFO("Primary ducet array was fixed."),
+    ?INFO("A primary ducet array was fixed."),
 
     NewDC = array:fix(DC),
-    ?INFO("Decomp array was fixed."),
+    ?INFO("A decomp array was fixed."),
+
+    NewDP = ucol_mask:fix(DP),
+    ?INFO("A tree was balanced."),
 
     Acc#acc{
         ducet=NewD,
         var_ducet=NewVD,
         primary_ducet=NewPD,
-        decomp=NewDC
+        decomp=NewDC,
+        diff_points=NewDP
     }.
 
 
@@ -108,7 +118,8 @@ array_set(Key, Weight, Ducet) ->
 ducet_handler({Key, Bin}, Acc=#acc{
         ducet=Ducet, 
         var_ducet=VarDucet,
-        primary_ducet=PrimDucet})
+        primary_ducet=PrimDucet,
+        diff_points=DiffPoints})
     when is_binary(Bin) -> 
     %% Bin is a binary weight
     {NonVarWeight, VarWeight} = ucol_weights:decode(Bin),
@@ -120,7 +131,24 @@ ducet_handler({Key, Bin}, Acc=#acc{
         true -> array_set(Key, ucol_weights:empty(VarWeight), VarDucet) end,
     PrimWeight = ucol_weights:primary_weight(NonVarWeight),
     NewPrimDucet = array_set(Key, PrimWeight, PrimDucet),
-    Acc#acc{ducet=NewDucet, var_ducet=NewVarDucet, primary_ducet=NewPrimDucet};
+
+    %% Create an array of points that are part of group of points.
+    %% Example:
+    %% Key = [$a]   no points
+    %% Key = [X, Y] add X and Y into an array
+    NewDiffPoints = case Key of
+            %% Add hangul characters (S, L, V) also
+            [_] -> 
+                case ucol_weights:is_hangul(PrimWeight) of
+                    true -> ucol_mask:add(Key, DiffPoints);
+                    false -> DiffPoints
+                end;
+
+            %% Add difficult points
+            [_|_] -> ucol_mask:add_list(Key, DiffPoints)
+        end,
+    Acc#acc{ducet=NewDucet, var_ducet=NewVarDucet, primary_ducet=NewPrimDucet,
+        diff_points=NewDiffPoints};
 
 ducet_handler(Info, Acc) -> 
     io:format("Info: ~w~n", [Info]), Acc.
@@ -149,12 +177,28 @@ decomp_ccc_handler({Char, _ReplaceStr}, CccList) ->
 
 decomp_ccc_handler(_, CccList) -> CccList.
 
-
-%collect_decomp_handler({_Char, [_ReplaceChar]}, Acc) -> Acc;
+%% Collect mapping Point -> [{Point, CCC}] for composed characters
 collect_decomp_handler({Char, ReplaceStr}, Acc=#acc{decomp=DecompArr}) ->
     Elem = [{X, ux_unidata:ccc(X)} || X <- ReplaceStr],
     NewDecompArr = array:set(Char, Elem, DecompArr),
     Acc#acc{decomp=NewDecompArr}.
+
+%% Add decomposed characters
+add_decomp_handler({Char, ReplaceStr}, Acc=#acc{diff_points=DiffPoints}) ->
+    %% If any of chars in decomposition are difficult, 
+    %%    then mark the composed character as difficult too.
+    IsDifficult = lists:any(in_mask(DiffPoints), ReplaceStr),
+    NewDiffPoints = case IsDifficult of
+            true -> ucol_mask:add(Char, DiffPoints);
+            false -> DiffPoints
+        end,
+    Acc#acc{diff_points=NewDiffPoints}.
+
+
+in_mask(DiffPoints) ->
+    fun(Point) ->
+        ucol_mask:is_member(Point, DiffPoints)
+    end.
 
 
 forms(#acc{
@@ -163,7 +207,8 @@ forms(#acc{
         primary_ducet=PrimDucet,
         ccc=Ccc, 
         decomp=Decomp,
-        implicit=Imp
+        implicit=Imp,
+        diff_points=DifPoints
     }) ->
     {ok, MTs, _} = erl_scan:string("-module(ucol_unidata)."),
     {ok, MF}     = erl_parse:parse_form(MTs),
@@ -174,6 +219,8 @@ forms(#acc{
     AbsDecomp    = erl_parse:abstract(Decomp),
     AbsImp       = erl_parse:abstract(Imp),
     AbsPrimDucet = erl_parse:abstract(PrimDucet),
+    AbsDifPoints = erl_parse:abstract(DifPoints),
+
     ?INFO("Abstract terms were builded."),
 
     DucetF       = function(ducet, AbsDucet),
@@ -182,9 +229,10 @@ forms(#acc{
     CccF         = function(ccc, AbsCcc),
     DecompF      = function(decomp, AbsDecomp),
     ImpF         = function(implicit, AbsImp),
+    DifPointsF   = function(diff_points, AbsDifPoints),
     ?INFO("Abstract Syntax Trees (AST) were transformed into forms."),
 
-    [MF, CccF, DecompF, ImpF, DucetF, VarDucetF, PrimDucetF].
+    [MF, CccF, DecompF, ImpF, DucetF, VarDucetF, PrimDucetF, DifPointsF].
 
 
 compile(Acc) ->
